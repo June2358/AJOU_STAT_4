@@ -1,0 +1,231 @@
+---
+title: "transformation and decomposition "
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: 
+      collapsed: false
+      smooth_scroll: false
+      number_sections: true
+      fig_caption: TRUE
+    css: "style.css"
+editor_options: 
+  chunk_output_type: console
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(fpp3)
+library(tsibble) #yearweek
+#univariate and multivariate time series forecasting models, tsibble
+library(fable) 
+
+library(tidyverse)
+library(here)
+library(data.table)
+library(lubridate)
+library(dplyr)
+library(patchwork)
+
+Y#new library
+library(GGally)
+
+library(here)
+
+#getting all the trasformed data
+source(here("source","get_fpp3.R"))
+```
+
+Reading: CH3.1 to 3.6
+
+|Type | why?|
+|:----|:-----|
+|Short-term forecasts| needed for the scheduling of personnel, production and transportation. As part of the scheduling process, forecasts of demand are often also required.
+|Medium-term forecasts |are needed to determine future resource requirements, in order to purchase raw materials, hire personnel, or buy machinery and equipment.|
+|Long-term forecasts|used in strategic planning. Such decisions must take account of market opportunities, environmental factors and internal resources.|
+
+- When we decompose a time series into components, we usually combine the trend and cycle into a single trend-cycle component (often just called the trend for simplicity). 
+
+- Thus we can think of a time series as comprising three components: 
+  - a trend-cycle component, 
+  - a seasonal component, and 
+  - a remainder component (containing anything else in the time series). 
+
+- For some time series (e.g., those that are observed at least daily), there can be more than one seasonal component, corresponding to the different seasonal periods.
+
+```{r}
+p1 <- global_economy |>
+  filter(Country == "Australia") |>
+  autoplot(GDP) +
+  labs(title= "GDP", y = "$US")
+
+p2 <- global_economy |>
+  filter(Country == "Australia") |>
+  autoplot(GDP/Population) +
+  labs(title= "GDP per capita", y = "$US")
+
+p1|p2
+
+```
+
+
+# Mathematical transformations
+
+## Box-Cox transformations
+
+```{r}
+lambda <- aus_production |>
+  features(Gas, features = guerrero) |>
+  pull(lambda_guerrero)
+
+
+aus_production |>
+  autoplot(box_cox(Gas, lambda)) +
+  labs(y = "",
+       title = latex2exp::TeX(paste0(
+         "Transformed gas production with $\\lambda$ = ",
+         round(lambda,2))))
+```
+
+# Decomposition 
+
+| Type | Note |
+|:-----|:----------------------------------|
+|$y_t = S_t + T_t + R_t$ | The additive decomposition is the most appropriate if the magnitude of the seasonal fluctuations ($S_t$), or the variation around the trend-cycle ($T_t$), does not vary with the level of the time series. ($R_t$, is residual)|
+|$y_t = S_t \cdot  T_t \cdot R_t$|When the variation in the seasonal pattern, or the variation around the trend-cycle, appears to be proportional to the level of the time series, then a multiplicative decomposition is more appropriate. Multiplicative decompositions are common with economic time series.|
+
+```{r}
+autoplot(us_retail_employment, Employed) +
+  labs(y = "Persons (thousands)",
+       title = "Total employment in US retail")
+```
+
+
+## Classifical decomposition 
+
+- Classical decomposition methods assume that the `seasonal component` repeats from year to year. 
+  - For many series, this is a reasonable assumption, but for some longer series it is not. 
+  - For example, electricity demand patterns have changed over time as air conditioning has become more widespread. 
+
+- In many locations, the seasonal usage pattern from several decades ago had its maximum demand in winter (due to heating), while the current seasonal pattern has its maximum demand in summer (due to air conditioning). 
+  - Classical decomposition methods are unable to capture these seasonal changes over time.
+  - Occasionally, the values of the time series in a small number of periods may be particularly unusual. 
+  - For example, `the monthly air passenger traffic may be affected by an industrial dispute`, making the traffic during the `dispute different from usual`. 
+  
+- `The classical method is not robust to these kinds of unusual values`.
+
+```{r}
+components(dcmp) |>
+  as_tsibble() |>
+  autoplot(Employed, colour = "gray") +
+  geom_line(aes(y=season_adjust), colour = "#0072B2") +
+  labs(y = "Persons (thousands)",
+       title = "Total employment in US retail")
+```
+
+- `trend` line is similar to moving average. (see Chapter 3.3)
+
+
+```{r}
+us_retail_employment |>
+  model(
+    classical_decomposition(Employed, type = "additive")
+  ) |>
+  components() |>
+  autoplot() +
+  labs(title = "Classical additive decomposition of total
+                  US retail employment")
+```
+
+
+```{r}
+us_retail_employment |>
+  model(
+    classical_decomposition(Employed, type = "multiplicative")
+  ) |>
+  components() |>
+  autoplot() +
+  labs(title = "Classical additive decomposition of total
+                  US retail employment")
+```
+
+## X11
+
+- Official statistics agencies (such as the US Census Bureau and the Australian Bureau of Statistics) are responsible for a large number of official economic and social time series. 
+
+- These agencies have developed their own decomposition procedures which are used for seasonal adjustment.
+  - Most of them use variants of the X-11 method, or the SEATS method, or a combination of the two.
+  
+- These methods are designed specifically to work with quarterly and monthly data, which are the most common series handled by official statistics agencies. 
+
+## STL 
+
+```{r}
+head(us_retail_employment)
+
+dcmp <- us_retail_employment |>
+  model(stl = STL(Employed))
+
+components(dcmp)
+```
+
+- The trend column (containing the trend-cycle, $T_t$) follows the overall movement of the series, ignoring any seasonality and random fluctuations.
+
+- The last column,`season_adjust` is $y_t-S_t$
+
+```{r}
+components(dcmp) |>
+  as_tsibble() |>
+  autoplot(Employed, colour="gray") +
+  geom_line(aes(y=trend), colour = "#D55E00") +
+  labs(
+    y = "Persons (thousands)",
+    title = "Total employment in US retail"
+  )
+```
+
+```{r}
+components(dcmp) |> autoplot()
+```
+
+Why use STL?
+
+- Unlike SEATS and X-11, STL will handle any type of seasonality, not only monthly and quarterly data.
+
+- The seasonal component is allowed to change over time, and the rate of change can be controlled by the user.
+
+- The smoothness of the trend-cycle can also be controlled by the user.
+- It can be robust to outliers (i.e., the user can specify a robust decomposition), so that occasional unusual observations will not affect the estimates of the trend-cycle and seasonal components. 
+
+- They will, however, affect the remainder component.
+
+### using STL 
+
+- and building a model
+
+```{r}
+us_retail_employment |>
+  model(
+    STL(Employed ~ trend(window = 7) +
+                   season(window = "periodic"),
+    robust = TRUE)) |>
+  components() |>
+  autoplot()
+```
+
+|Parameters| Note|
+|:----|:---------|
+|`trend(window = ?)` |trend window is the number of consecutive observations to be used when estimating the trend-cycle. Need to be odd number|
+| `season(window = ?)`  |season window is the number of consecutive years to be used in estimating each value in the seasonal component. Setting the seasonal window to be infinite is equivalent to forcing the seasonal component to be periodic season(window='periodic') (i.e., identical across years)|
+
+```{r}
+us_retail_employment |>
+  model(
+    STL(Employed ~ trend(window = 7) +
+                   season(window = 9),
+    robust = TRUE)) |>
+  components() |>
+  autoplot()
+```
+
