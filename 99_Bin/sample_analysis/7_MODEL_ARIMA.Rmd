@@ -1,0 +1,453 @@
+---
+title: "The forecaster’s toolbox: fable"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: 
+      collapsed: false
+      smooth_scroll: false
+      number_sections: true
+      fig_caption: TRUE
+    css: "style.css"
+editor_options: 
+  chunk_output_type: console
+---
+
+<style>
+.table-hover > tbody > tr:hover { 
+  background-color: #f4f442;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+library(fpp3)
+library(tsibble) #yearweek
+#univariate and multivariate time series forecasting models, tsibble
+library(fable) 
+
+library(tidyverse)
+library(here)
+library(data.table)
+library(lubridate)
+library(dplyr)
+library(patchwork)
+
+#new library
+library(GGally)
+library(kableExtra)
+library(here)
+
+#getting all the trasformed data
+source(here("source","get_fpp3.R"))
+```
+
+Reading: Ch9.1-Ch9.9
+
+- `Exponential smoothing` and `ARIMA` models are the two most widely used approaches to time series forecasting, and provide complementary approaches to the problem. 
+
+- While `exponential smoothing models` are based on a description of the trend and seasonality in the data, `ARIMA models` aim to describe the autocorrelations in the data.
+
+# Stationary 
+
+- A stationary time series is one whose statistical properties do not depend on the time at which the series is observed. 
+  - Thus, time series with trends, or with seasonality, are not stationary 
+    — the trend and seasonality will affect the value of the time series at different times. 
+  - A white noise series is stationary 
+    - it does not matter when you observe it, it should look much the same at any point in time.
+
+## Differencing
+
+- There is a degree of subjectivity in selecting which differences to apply. 
+
+- When both seasonal and first differences are applied, it makes no difference which is done first—the result will be the same. However, if the data have a strong seasonal pattern, we recommend that seasonal differencing be done first, because the resulting series will sometimes be stationary and there will be no need for a further first difference.
+
+```{r}
+google_2015 <- gafa_stock |>
+  filter(Symbol == "GOOG", year(Date) == 2015)
+
+p1 <- google_2015 |> ACF(Close) |>
+  autoplot() + labs(subtitle = "Google closing stock price")
+
+p2 <- google_2015 |> ACF(difference(Close)) |>
+  autoplot() + labs(subtitle = "Changes in Google closing stock price")
+
+
+p1/p2
+```
+
+```{r}
+google_2015 |>
+  mutate(diff_close = difference(Close)) |>
+  features(diff_close, ljung_box, lag = 10)
+```
+
+- The ACF of the differenced Google stock price looks just like that of a white noise series. Only one autocorrelation is outside of the 95% limits, and the Ljung-Box statistic has a p-value of 0.637 (for  
+h=10). 
+  - This suggests that the daily change in the Google stock price is essentially a random amount which is uncorrelated with that of previous days.
+  
+## second order differencing
+
+- Occasionally the differenced data will not appear to be stationary and it may be necessary to difference the data a second time to obtain a stationary series
+
+## Seasonal differencing
+
+A seasonal difference is the difference between an observation and the previous observation from the same season. 
+
+$$ y_t^` = y_t - y_{t-m}$$
+
+where $m$ = `the number of seasons`.  These are also called `lag-m differences` as we subtract the observation after a lag of `m` periods
+
+# Unit root testing
+
+One way to determine more objectively whether differencing is required is to use a unit root test. These are statistical hypothesis tests of stationarity that are designed for determining whether differencing is required
+
+|Test | Note |
+|:----|:-----|
+|KPSS | the null hypothesis is that the data are stationary, and we look for evidence that the null hypothesis is false|
+|Dickey-Fuller Test | $H_0$: data is non-stationary|
+
+```{r}
+google_2015 |>
+  features(Close, unitroot_kpss)
+```
+
+- `p-value` is small. We can reject our $H_0$.
+
+```{r}
+google_2015 |>
+  mutate(diff_close = difference(Close)) |>
+  features(diff_close, unitroot_kpss)
+```
+
+- We can't reject $H_0$ that the differenced data appear stationary.
+
+## Determine the number of difference
+
+This process of using a sequence of KPSS tests to determine the appropriate number of first differences is carried out using the unitroot_ndiffs() feature.
+
+```{r}
+google_2015 |>
+  features(Close, unitroot_ndiffs)
+```
+
+# arima
+
+## AR
+
+- In an `autoregression model`, we forecast the variable of interest using a linear combination of past values of the variable. The term autoregression indicates that it is a regression of the variable against itself.
+
+## MA
+
+- A moving average model is used for forecasting future values, while moving average smoothing is used for estimating the trend-cycle of past values.
+
+# ARIMA(p,d,q)
+
+- If we combine differencing with autoregression and a moving average model, we obtain a non-seasonal ARIMA model. 
+
+- ARIMA is an acronym for AutoRegressive Integrated Moving Average (in this context, “integration” is the reverse of differencing). 
+
+- It is usually not possible to tell, simply from a time plot, what values of `p` and `q` are appropriate for the data. However, it is sometimes possible to use the ACF plot, and the closely related PACF plot, to determine appropriate values for `p` and `q`.
+
+- The `ARIMA()` function in the `fable` package uses a variation of the Hyndman-Khandakar algorithm (Hyndman & Khandakar, 2008), which combines unit root tests, minimisation of the AICc and MLE to obtain an ARIMA model. The arguments to ARIMA() provide for many variations on the algorithm.
+  - `d` is automatically determined using KPSS test
+  - `p` and `q` are evaluated
+  - returns the best parameter
+
+- `fabl`e ensures the fitted model is both stationary and invertible. Any roots close to the unit circle may be numerically unstable, and the corresponding model will not be good for forecasting.
+
+```{r}
+p1 <- global_economy |>
+  filter(Code == "EGY") |>
+  autoplot(Exports) +
+  labs(y = "% of GDP", title = "Egyptian exports")
+
+p2 <- global_economy |>
+  filter(Code == "EGY") |>
+  ACF(Exports) |>
+  autoplot()
+
+p3 <- global_economy |>
+  filter(Code == "EGY") |>
+  PACF(Exports) |>
+  autoplot()
+
+p1/(p2|p3)
+```
+
+
+```{r}
+global_economy %>%  filter(Code == "EGY") %>% 
+                    gg_tsdisplay(Exports, plot_type = "partial")
+```
+
+
+## Nonseasonal ARIMA
+
+```{r}
+fit <- global_economy |>
+  filter(Code == "EGY") |>
+  model(ARIMA(Exports))
+report(fit)
+```
+
+
+$$\hat{y}_t = 2.56 + 1.68y_{t-1}-0.8y_{t-2} -0.69\epsilon_{t-1}$$
+
+```{r}
+fit2 <- global_economy |>
+  filter(Code == "EGY") |>
+  model(ARIMA(Exports ~ pdq(4,0,0)))
+report(fit2)
+
+
+fit3 <- global_economy |>
+  filter(Code == "EGY") |>
+  model(ARIMA(Exports ~ pdq(p=1, d=1, q=0:2)))
+
+report(fit3)
+
+```
+
+
+
+```{r fig.height=8}
+p1 <- fit |> forecast(h=2) |>
+  autoplot(global_economy) +
+  labs(y = "% of GDP", title = "Egyptian exports, h = 2")
+
+p2 <- fit |> forecast(h=5) |>
+  autoplot(global_economy) +
+  labs(y = "% of GDP", title = "Egyptian exports, h = 5")
+
+p3 <- fit |> forecast(h=10) |>
+  autoplot(global_economy) +
+  labs(y = "% of GDP", title = "Egyptian exports, h = 10")
+
+
+p1/p2/p3
+
+
+```
+
+
+```{r, echo=FALSE, fig.align='center', out.width="100%", fig.cap="ARIMA STEPS"}
+knitr::include_graphics(here("fig/4.PNG"))
+```
+
+
+```{r, echo=FALSE, fig.align='center', out.width="100%", fig.cap="ARIMA FLOW CHART"}
+knitr::include_graphics(here("fig/5.PNG"))
+```
+
+
+## Multiple ARIMA
+
+### fit model 
+
+```{r}
+caf_fit <- global_economy |>
+  filter(Code == "CAF") |>
+  model(arima210 = ARIMA(Exports ~ pdq(2,1,0)),
+        arima013 = ARIMA(Exports ~ pdq(0,1,3)),
+        stepwise = ARIMA(Exports),
+        search = ARIMA(Exports, stepwise=FALSE))
+```
+
+- see fitted model
+
+```{r}
+head(caf_fit)
+
+caf_fit %>%  pivot_longer(!Country, names_to = "Model name",
+                         values_to = "Orders")
+```
+
+- see fitted model performance
+
+### evaluate the performance
+
+```{r}
+glance(caf_fit) |> arrange(AICc) |> select(.model:BIC)
+```
+
+```{r}
+caf_fit |>
+  select(search) |>
+  gg_tsresiduals()
+```
+
+- is the innovation residual a white noise?
+
+```{r}
+augment(caf_fit) |>
+  filter(.model=='search') |>
+  features(.innov, ljung_box, lag = 10, dof = 3)
+```
+
+- A portmanteau test(setting K=3) returns a large p-value, also suggesting that the residuals are white noise.
+
+### make prediction
+
+```{r}
+caf_fit |>
+  forecast(h=5) |>
+  filter(.model=='search') |>
+  autoplot(global_economy)
+```
+
+## Seasonal ARIMA
+
+ARIMA $(p,d,q)$,$(P,D,Q)_m$ with seasonal component. 
+
+```{r}
+leisure <- us_employment |>
+  filter(Title == "Leisure and Hospitality",
+         year(Month) > 2000) |>
+  mutate(Employed = Employed/1000) |>
+  select(Month, Employed)
+autoplot(leisure, Employed) +
+  labs(title = "US employment: leisure and hospitality",
+       y="Number of people (millions)")
+```
+
+
+```{r}
+leisure |>
+  gg_tsdisplay(Employed,
+               plot_type='partial', lag=36) +
+  labs(title="Employeed data", y="Monthly count")
+
+leisure |>
+  gg_tsdisplay(difference(Employed, 12),
+               plot_type='partial', lag=36) +
+  labs(title="Seasonally differenced", y="")
+
+leisure |>
+  gg_tsdisplay(difference(Employed, 12) |> difference(),
+               plot_type='partial', lag=36) +
+  labs(title = "Double differenced", y="")
+```
+
+- The significant spike at lag 2 in the ACF suggests a non-seasonal MA(2) component. 
+
+- The significant spike at lag 12 in the ACF suggests a seasonal MA(1) component. Consequently, we begin with an ARIMA(0,1,2)(0,1,1) 
+12 model, indicating a first difference, a seasonal difference, and non-seasonal MA(2) and seasonal MA(1) component. 
+
+- If we had started with the PACF, we may have selected an ARIMA(2,1,0)(0,1,1) model 
+  — using the PACF to select the non-seasonal part of the model and the ACF to select the seasonal part of the model. 
+  
+- We will also include an automatically selected model. 
+  - By setting `stepwise=FALSE` and `approximation=FALSE`, we are making `R` work extra hard to find a good model. This takes much longer, but with only one series to model, the extra time taken is not a problem
+
+### fit the model 
+
+```{r}
+#takes about 30 seconds
+fit <- leisure |>
+  model(
+    arima012011 = ARIMA(Employed ~ pdq(0,1,2) + PDQ(0,1,1)),
+    arima210011 = ARIMA(Employed ~ pdq(2,1,0) + PDQ(0,1,1)),
+    auto = ARIMA(Employed, stepwise = FALSE, approx = FALSE)
+  )
+
+fit |> pivot_longer(everything(), names_to = "Model name",
+                     values_to = "Orders")
+```
+
+### evaluate at the fit
+
+```{r}
+glance(fit) |> arrange(AICc) |> select(.model:BIC)
+```
+
+```{r}
+fit |> select(auto) |> gg_tsresiduals(lag=36)
+```
+
+### make forecast 
+
+```{r}
+forecast(fit, h=36) |>
+  filter(.model=='auto') |>
+  autoplot(leisure) +
+  labs(title = "US employment: leisure and hospitality",
+       y="Number of people (millions)")
+```
+
+
+# Drug Sales example
+
+Objective:Forecast monthly corticosteroid (aka as H02) drug sales in Australia. 
+
+```{r}
+head(PBS)
+
+h02 <- PBS |>
+  filter(ATC2 == "H02") |>
+  summarise(Cost = sum(Cost)/1e6)
+
+h02 |>
+  mutate(log(Cost)) |>
+  pivot_longer(-Month) |>
+  ggplot(aes(x = Month, y = value)) +
+  geom_line() +
+  facet_grid(name ~ ., scales = "free_y") +
+  labs(y="", title="Corticosteroid drug scripts (H02)")
+```
+
+- Data from July 1991 to June 2008 are plotted in Figure 9.23. 
+  - There is a small increase in the variance with the level, so we take logarithms to stabilize the variance.
+  
+- The data are strongly seasonal and obviously non-stationary, so seasonal differencing will be used.
+
+- The data are strongly seasonal and obviously non-stationary, so seasonal differencing will be used. 
+  - The seasonally differenced data are shown below. 
+  - It is not clear at this point whether we should do another difference or not. We decide not to, but the choice is not obvious.
+
+- The last few observations appear to be different (more variable) from the earlier data. This may be due to the fact that data are sometimes revised when earlier sales are reported late.
+
+```{r}
+h02 |> gg_tsdisplay(difference(log(Cost), lag = 12),
+                     plot_type='partial', lag_max = 24)
+```
+
+## fit the model 
+
+```{r}
+fit <- h02 %>% 
+  model(search = ARIMA(Cost, stepwise=FALSE))
+
+```
+
+## evaluate the fit 
+
+```{r}
+fit |> gg_tsresiduals(lag_max=36)
+
+augment(fit) |>
+  features(.innov, ljung_box, lag = 36, dof = 6)
+```
+
+- When models are compared using $AIC_c$ values, it is important that all models have the same orders of differencing. 
+
+- However, when comparing models using a test set, it does not matter how the forecasts were produced — the comparisons are always valid.
+
+- In practice, we would normally use the best model we could find, even if it did not pass all of the tests.
+
+## make forecast
+
+```{r}
+fit %>% 
+  forecast() |>
+  autoplot(h02) +
+  labs(y=" $AU (millions)",
+       title="Corticosteroid drug scripts (H02) sales")
+```
+

@@ -1,0 +1,164 @@
+---
+title: "Expoential Smoothing"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: 
+      collapsed: false
+      smooth_scroll: false
+      number_sections: true
+      fig_caption: TRUE
+    css: "style.css"
+editor_options: 
+  chunk_output_type: console
+---
+
+<style>
+.table-hover > tbody > tr:hover { 
+  background-color: #f4f442;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+library(fpp3)
+library(tsibble) #yearweek
+#univariate and multivariate time series forecasting models, tsibble
+library(fable) 
+
+library(tidyverse)
+library(here)
+library(data.table)
+library(lubridate)
+library(dplyr)
+library(patchwork)
+
+#new library
+library(GGally)
+library(kableExtra)
+library(here)
+
+library(prophet)
+
+#getting all the trasformed data
+source(here("source","get_fpp3.R"))
+```
+
+Reading: Ch7.6,7.7.8.1
+
+- Forecasts produced using exponential smoothing methods are weighted averages of past observations, with the weights decaying exponentially as the observations get older. 
+
+- In other words, the more recent the observation the higher the associated weight. 
+
+- This framework generates reliable forecasts quickly and for a wide range of time series, which is a great advantage and of major importance to applications in industry.
+
+- ETS()Component form representations of exponential smoothing methods comprise a forecast equation and a smoothing equation for each of the components included in the method.
+
+#Algeria Economy 
+
+- Annual data, no trend and is chaning very rapidly. 
+
+```{r}
+algeria_economy %>% autoplot(Exports)
+```
+
+
+```{r}
+# Estimate parameters
+fit <- algeria_economy |>
+  model(
+    ets = ETS(Exports ~ error("A") + trend("A") + season("N")),
+        tslm = TSLM(Exports ~ trend()),
+        arima = ARIMA(Exports)
+        )
+
+fc <- fit |>
+  forecast(h = 5)
+
+
+fc |>
+  autoplot(algeria_economy) +
+  geom_line(aes(y = .fitted), col="#D55E00",
+            data = augment(fit)) +
+  labs(y="% of GDP", title="Exports: Algeria using ETS()") +
+  guides(colour = "none")
+
+```
+
+# Beer Production 
+
+- Quarterly data, very strongly seasonality
+
+```{r}
+head(aus_production)
+aus_production %>% filter(year(Quarter) >= 1992) %>% autoplot()
+```
+
+
+```{r}
+recent_production <- aus_production |>
+  filter(year(Quarter) >= 1992)
+
+## ETS
+fit_beer <- recent_production |>
+  model(
+    ets = ETS(Beer),
+    tslm = TSLM(Beer ~ trend() + season()),
+    arima = ARIMA(Beer),
+    # prophet = prophet(Beer ~ season(period = 4, order = 2,
+    #                                 type = "multiplicative")),
+    # nnet = NNETAR(Beer)
+        )
+
+fc_beer <- forecast(fit_beer)
+
+
+fc_beer |>
+  autoplot(recent_production) +
+  labs(
+    title = "Forecasts of beer production using ETS, TLSM and ARIMA",
+    y = "megalitres"
+  ) + theme(legend.position = "top")
+
+
+```
+
+# AUS HOLIDAYS
+
+- Quarterly data, strong seasonality with trend. tslm() performed the worst.
+
+```{r}
+aus_holidays <- tourism |>
+  filter(Purpose == "Holiday") |>
+  summarise(Trips = sum(Trips)/1e3)
+
+head(aus_holidays)
+
+aus_holidays %>% autoplot(Trips)
+
+## ETS
+fit <- aus_holidays |>
+  model(
+    additive = ETS(Trips ~ error("A") + trend("A") +
+                                                season("A")),
+    multiplicative = ETS(Trips ~ error("M") + trend("A") +
+                                                season("M")),
+    tslm = TSLM(Trips ~ trend() + season()),
+    arima = ARIMA(Trips)
+  )
+
+fc <- fit |> forecast(h = "3 years")
+fc |>
+  autoplot(aus_holidays, level = NULL) +
+  labs(title="Australian domestic tourism",
+       y="Overnight trips (millions)") +
+  guides(colour = guide_legend(title = "Forecast"))
+
+```
+

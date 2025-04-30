@@ -1,0 +1,263 @@
+---
+title: "Time Series Features: feasts"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: 
+      collapsed: false
+      smooth_scroll: false
+      number_sections: true
+      fig_caption: TRUE
+    css: "style.css"
+editor_options: 
+  chunk_output_type: console
+---
+
+<style>
+.table-hover > tbody > tr:hover { 
+  background-color: #f4f442;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(fpp3)
+library(tsibble) #yearweek
+#univariate and multivariate time series forecasting models, tsibble
+library(fable) 
+
+library(tidyverse)
+library(here)
+library(data.table)
+library(lubridate)
+library(dplyr)
+library(patchwork)
+
+#new library
+library(GGally)
+library(kableExtra)
+library(here)
+
+#getting all the trasformed data
+source(here("source","get_fpp3.R"))
+```
+
+Reading: CH4.1 to 4.5
+
+|Type | why?|
+|:----|:-----|
+|Short-term forecasts| needed for the scheduling of personnel, production and transportation. As part of the scheduling process, forecasts of demand are often also required.
+|Medium-term forecasts |are needed to determine future resource requirements, in order to purchase raw materials, hire personnel, or buy machinery and equipment.|
+|Long-term forecasts|used in strategic planning. Such decisions must take account of market opportunities, environmental factors and internal resources.|
+
+- When we decompose a time series into components, we usually combine the trend and cycle into a single trend-cycle component (often just called the trend for simplicity). 
+
+- Thus we can think of a time series as comprising three components: 
+  - a trend-cycle component, 
+  - a seasonal component, and 
+  - a remainder component (containing anything else in the time series). 
+
+- For some time series (e.g., those that are observed at least daily), there can be more than one seasonal component, corresponding to the different seasonal periods.
+
+# Feast
+
+- The feasts package includes functions for computing FEatures And Statistics from Time Series
+
+```{r}
+tourism |>
+  features(Trips, list(mean = mean)) |> head() %>% 
+  arrange(mean) %>% kable("html") %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+tourism |> features(Trips, quantile) %>% head() %>%  
+  kable("html") %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+## acf
+
+|Column | Name |
+|:------|:-----|
+|acf1 |the first autocorrelation coefficient from the original data|
+|acf10|the sum of squares of the first ten autocorrelation coefficients from the original data|
+|diff1_acf1| the first autocorrelation coefficient from the differenced data|
+|diff1_acf10| the sum of squares of the first ten autocorrelation coefficients from the differenced data|
+|diff2_acf1|the first autocorrelation coefficient from the twice differenced data|
+|diff2_acf10|the sum of squares of the first ten autocorrelation coefficients from the twice differenced data|
+|season_acf1|For seasonal data, the autocorrelation coefficient at the first seasonal lag is also returned|
+
+```{r}
+tourism |> features(Trips, feat_acf) %>% head() %>% 
+  kable("html") %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+## STL
+
+|Statistic | Description |
+|:-----|:------|
+|$F_T$ | Strength of the trend between 0 and 1. Because the variance of the remainder might occasionally be even larger than the variance of the seasonally adjusted data, we set the minimal possible value of $F_T$ equal to zero|
+|A series with seasonal strength $F_S$ close to 0 exhibits almost no seasonality, while a series with strong seasonality will have $F_S$ close to 1|
+
+These measures can be useful, for example, when you have a large collection of time series, and you need to find the series with the most trend or the most seasonality.
+
+```{r}
+tourism |>
+  features(Trips, feat_stl) %>% head() %>% 
+  kable("html") %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+
+```{r}
+tourism |>
+  features(Trips, feat_stl) |>
+  ggplot(aes(x = trend_strength, y = seasonal_strength_year,
+             col = Purpose)) +
+  geom_point() + theme(legend.position = "top") +
+  facet_wrap(vars(State))
+```
+
+- Select region with maximum seasonal_stregth 
+
+```{r}
+tourism %>% head() %>%  
+  kable("html") %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+length(unique(tourism$Region))
+length(unique(tourism$State))
+length(unique(tourism$Purpose))
+```
+
+
+```{r}
+temp <- tourism |>
+  features(Trips, feat_stl) 
+
+head(temp) %>%  kable("html") %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+#select the max seasonal_stregnth_year
+temp <- temp %>% filter(
+    seasonal_strength_year == max(seasonal_strength_year)) 
+
+head(temp) %>%  kable("html") %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+- Join the tables
+
+```{r}
+temp <- temp %>% left_join(tourism, 
+                   by = c("State", "Region", "Purpose"), 
+                   multiple = "all")
+
+head(temp)
+
+temp %>%   ggplot(aes(x = Quarter, y = Trips)) +
+  geom_line() +
+  facet_grid(vars(State, Region, Purpose))
+```
+
+## Other statistics 
+
+```{r}
+#read in  excel file and display it as table
+```
+
+# Exploring Australian toursim data
+
+```{r}
+#it takes a few minutes
+tourism_features <- tourism |>
+  features(Trips, feature_set(pkgs = "feasts"))
+
+glimpse(tourism_features)
+```
+
+```{r}
+library(glue)
+tourism_features |>
+  select_at(vars(contains("season"), Purpose)) |>
+  mutate(
+    seasonal_peak_year = seasonal_peak_year +
+      4*(seasonal_peak_year==0),
+    seasonal_trough_year = seasonal_trough_year +
+      4*(seasonal_trough_year==0),
+    seasonal_peak_year = glue("Q{seasonal_peak_year}"),
+    seasonal_trough_year = glue("Q{seasonal_trough_year}"),
+  ) |>
+  GGally::ggpairs(mapping = aes(colour = Purpose))
+```
+
+- It is difficult to explore more than a handful of variables in this way. 
+- A useful way to handle many more variables is to use a dimension reduction technique such as principal components. 
+  - This gives linear combinations of variables that explain the most variation in the original data. 
+  - We can compute the principal components of the tourism features as follows.
+  
+```{r}
+library(broom)
+pcs <- tourism_features |>
+  select(-State, -Region, -Purpose) |>
+  prcomp(scale = TRUE) |>
+  augment(tourism_features)
+
+p1 <- pcs |>
+  ggplot(aes(x = .fittedPC1, y = .fittedPC2, col = Purpose)) +
+  geom_point() +
+  theme(aspect.ratio = 1)
+
+
+library(plotly)
+ggplotly(p1)
+```
+  
+- Each point represents one series and its location on the plot is based on all 48 features. 
+
+- The first principal component (`.fittedPC1`) is the linear combination of the features which explains the most variation in the data. 
+
+- The second principal component (`.fittedPC2`) is the linear combination which explains the next most variation in the data, while being uncorrelated with the first principal component. 
+
+- The figure reveals a few things about the tourism data. 
+  - First, the `holiday series` behave quite differently from the rest of the series. 
+    - Almost all of the holiday series appear in the top half of the plot, while almost all of the remaining series appear in the bottom half of the plot.
+    - the second principal component is distinguishing between holidays and other types of travel.
+
+- The plot also allows us to identify anomalous time series — series which have unusual feature combinations. 
+
+- These appear as points that are separate from the majority of series. 
+
+- There are four that stand out, and we can identify which series they correspond to as follows
+
+```{r}
+outliers <- pcs |>
+  filter(.fittedPC1 > 10) |>
+  select(Region, State, Purpose, .fittedPC1, .fittedPC2)
+
+outliers %>% kable("html") %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+
+```{r}
+outliers |>
+  left_join(tourism, by = c("State", "Region", "Purpose"), multiple = "all") |>
+  mutate(Series = glue("{State}", "{Region}", "{Purpose}", .sep = "\n\n")) |>
+  ggplot(aes(x = Quarter, y = Trips)) +
+  geom_line() +
+  facet_grid(Series ~ ., scales = "free") +
+  labs(title = "Outlying time series in PC space")
+```
+
+We can speculate why these series are identified as unusual.
+
+- Holiday visits to the south coast of NSW is highly seasonal but has almost no trend, whereas most holiday destinations in Australia show some trend over time.
+
+- Melbourne is an unusual holiday destination because it has almost no seasonality, whereas most holiday destinations in Australia have highly seasonal tourism.
+
+- The north western corner of Western Australia is unusual because it shows an increase in business tourism in the last few years of data, but little or no seasonality.
+
+- The south western corner of Western Australia is unusual because it shows both an increase in holiday tourism in the last few years of data and a high level of seasonality.

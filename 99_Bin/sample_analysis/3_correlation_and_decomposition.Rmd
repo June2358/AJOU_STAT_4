@@ -1,0 +1,252 @@
+---
+title: "correlation"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: 
+      collapsed: false
+      smooth_scroll: false
+      number_sections: true
+      fig_caption: TRUE
+    css: "style.css"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+voltage = c(11.77, 11.90, 11.64, 11.84, 12.13, 11.99, 11.77)
+
+# 샘플 통계량 계산
+sample_mean <- mean(voltage)
+sample_sd <- sd(voltage)
+
+# t-임계값 계산
+t_critical <- qt(1 - 0.025, df = length(voltage) - 1)
+print(t_critical)
+
+# 4. 가설 설정 (예: H0: μ = 12) 에 대한 t-통계량 계산
+mu0 <- 12 # 귀무가설의 평균값
+t_stat <- (sample_mean - mu0) / (sample_sd / sqrt(n))
+print(paste("t-통계량:", t_stat))
+
+# 1. 양측 검정 (Two-tailed test)
+#    t_stat 값을 사용. t_stat이 음수이므로 왼쪽 꼬리 확률 * 2
+p_value_two_tailed <- 2 * pt(t_stat, df = length(voltage) - 1)
+print(paste("  양측 검정 p-value:", p_value_two_tailed))
+```
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(fpp3)
+library(tsibble) #yearweek
+#univariate and multivariate time series forecasting models, tsibble
+library(fable) 
+
+library(tidyverse)
+library(here)
+library(data.table)
+library(lubridate)
+library(dplyr)
+
+#new library
+library(GGally)
+
+library(here)
+source(here("source","get_fpp3.R"))
+```
+
+- Reading: CH2.6 to 2.10
+
+|Type | why?|
+|:----|:-----|
+|Short-term forecasts| needed for the scheduling of personnel, production and transportation. As part of the scheduling process, forecasts of demand are often also required.
+|Medium-term forecasts |are needed to determine future resource requirements, in order to purchase raw materials, hire personnel, or buy machinery and equipment.|
+|Long-term forecasts|used in strategic planning. Such decisions must take account of market opportunities, environmental factors and internal resources.|
+
+# Electricity
+
+- The temperatures are for `Melbourne`, the largest city in Victoria, while the demand values are for the `entire state`
+
+```{r}
+vic_elec
+
+vic_elec %>% 
+  filter(year(Time) == 2014) %>% 
+  autoplot(Demand) +
+  labs(y = "GW",
+       title = "Half-hourly electricity demand: Victoria")
+```
+
+```{r}
+vic_elec |>
+  filter(year(Time) == 2014) |>
+  autoplot(Temperature) +
+  labs(
+    y = "Degrees Celsius",
+    title = "Half-hourly temperatures: Melbourne, Australia"
+  )
+```
+
+We can study the relationship between demand and temperature by plotting one series against the other.
+
+```{r}
+vic_elec %>% 
+  filter(year(Time) == 2014) %>% 
+  ggplot(aes(x = Temperature, y = Demand)) +
+  geom_point() +
+  labs(title="Electricity demand versus Temperature",
+       x = "Temperature (degrees Celsius)",
+       y = "Electricity demand (GW)")
+```
+
+It is clear that high demand occurs when temperatures are high due to the effect of air-conditioning. But there is also a heating effect, where demand increases for very low temperatures.
+
+# Correlation 
+
+- Sample correlation. 
+
+$$r = \frac{\sum(x_i-\bar{x})(y_i-\bar{y})}{\sqrt(\sum(x_i-\bar{x})^2(y_i-\bar{y})^2)}$$
+
+```{r}
+visitors |>
+  ggplot(aes(x = Quarter, y = Trips)) +
+  geom_line() +
+  facet_grid(vars(State), scales = "free_y") +
+  labs(title = "Australian domestic tourism",
+       y= "Overnight trips ('000)")
+```
+
+## Are they correlated to each other?
+
+```{r}
+visitors |>
+  pivot_wider(values_from=Trips, names_from=State) |>
+  GGally::ggpairs(columns = 2:9)
+```
+
+- In this example, mostly positive relationships are revealed, with the strongest relationships being between the neighbouring states located in the south and south east coast of Australia, namely, `New South Wales`, `Victoria` and `South Australia`. 
+
+- Some negative relationships are also revealed between the `Northern Territory` and other regions.    - The Northern Territory is located in the north of Australia famous for its outback desert landscapes visited mostly in winter. 
+  - Hence, the peak visitation in the Northern Territory is in the `July (winter) quarter` in contrast to `January (summer) quarter` for the rest of the regions.
+  
+## Lag
+
+- Here the colours indicate the quarter of the variable on the vertical axis. 
+- The relationship is strongly positive at lags 4 and 8, reflecting the strong seasonality in the data. The negative relationship seen for lags 2 and 6 occurs because peaks (in Q4) are plotted against troughs (in Q2)
+
+  
+```{r}
+recent_production
+
+recent_production |>
+  gg_lag(Beer, geom = "point") +
+  labs(x = "lag(Beer, k)")
+```
+  
+# Autocorrelation 
+
+autocorrelation measures the linear relationship between lagged values of a time series.
+
+```{r}
+recent_production |> ACF(Beer, lag_max = 9)
+
+```
+
+```{r}
+recent_production |>
+  ACF(Beer) |>
+  autoplot() + labs(title="Australian beer production")
+```
+
+- $r_4$ is higher than for the other lags. 
+  - This is due to the seasonal pattern in the data: the peaks tend to be four quarters apart and the troughs tend to be four quarters apart.
+
+- $r_2$ is more negative than for the other lags because troughs tend to be two quarters behind peaks.
+
+- The dashed blue lines indicate whether the correlations are significantly different from zero
+
+## Trend and Seasonality
+
+- When data have a `trend`, the autocorrelations for small lags tend to be large and positive because observations nearby in time are also nearby in value. 
+  - So the ACF of a trended time series tends to have positive values that `slowly decrease as the lags increase`.
+
+- When data are `seasonal`, the autocorrelations will be larger for the seasonal lags (at multiples of the seasonal period) than for other lags.
+
+- When data are both `trended` and `seasonal`, you see a combination of these effects. The a10 data plotted (see below) shows both trend and seasonality. 
+  - The slow decrease in the ACF as the lags increase is due to the trend, while the `scalloped` shape is due to the seasonality.
+  
+```{r}
+a10 %>% 
+  ACF(Cost, lag_max = 48) %>% 
+  autoplot() +
+  labs(title="Australian antidiabetic drug sales")
+```
+
+# White noise (see CH 2.9)
+
+- Time series that show no autocorrelation are called `white noise`.
+
+```{r}
+set.seed(30)
+y <- tsibble(sample = 1:50, wn = rnorm(50), index = sample)
+y %>%  autoplot(wn) + labs(title = "White noise", y = "")
+
+y %>% 
+  ACF(wn) %>% 
+  autoplot() + labs(title = "White noise")
+```
+
+- work on exercise 2.10
+
+```{r}
+# 1. Load Data
+glimpse(aus_livestock)
+
+# 2. Filter the data for pig slaughters in Victoria between 1990 and 1995
+pigs_vic_90_95 <- aus_livestock %>%
+  filter(Animal == "Pigs",          # Select pigs
+         State == "Victoria",       # Select Victoria
+         year(Month) >= 1990,     # Select years from 1990 onwards
+         year(Month) <= 1995)     # Select years up to 1995
+
+# Check the filtered data
+print(pigs_vic_90_95)
+
+# 3. Create a time series plot (autoplot) for the filtered data
+pigs_vic_90_95 %>%
+  autoplot(Count) +
+  labs(title = "Monthly Pig Slaughters in Victoria (1990-1995)",
+       y = "Number Slaughtered",
+       x = "Month")
+
+# 4. Create an ACF plot for the filtered data
+pigs_vic_90_95 %>%
+  ACF(Count) %>%
+  autoplot() +
+  labs(title = "ACF of Monthly Pig Slaughters in Victoria (1990-1995)")
+
+# Display the plot
+print(pigs_vic_90_95)
+```
+
+
+```{r}
+# Filter for the entire period for Victoria Pigs
+pigs_vic_all <- aus_livestock %>%
+  filter(Animal == "Pigs",
+         State == "Victoria")
+
+# Create ACF plot for the longer period
+acf_plot_long <- pigs_vic_all %>%
+  ACF(Count) %>%
+  autoplot() +
+  labs(title = "ACF of Monthly Pig Slaughters in Victoria (Full Period)")
+
+# Display the plot
+print(acf_plot_long)
+```
+

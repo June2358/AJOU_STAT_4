@@ -1,0 +1,201 @@
+---
+title: "ILINet 데이터 예측 최종 분석"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+    number_sections: true
+    fig_caption: true
+---
+
+```{r setup, include=FALSE}
+# --- 0. 설정 및 라이브러리 로드 ---
+# install.packages(c("fpp3", "tidyverse", "lubridate", "here", "data.table", "fable.prophet", "scales", "ggnewscale")) # 필요시 설치
+
+library(fpp3)
+library(tidyverse)
+library(lubridate)
+library(here)
+library(data.table)
+library(fable.prophet)
+library(scales)
+library(ggnewscale)
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 6)
+
+print("--- 0. 라이브러리 로드 완료 ---")
+
+# --- 설정 변수 (프로젝트 구조 반영) ---
+target_col_name <- "ILITOTAL"
+# 데이터 경로
+data_file_path <- here("02_data", "raw", "ILINet.csv")
+# 모델 및 Lambda 저장 경로
+model_dir <- here("04_models")
+dir.create(model_dir, showWarnings = FALSE, recursive = TRUE) # 폴더 없으면 생성
+saved_heavy_model_file <- file.path(model_dir, "final_heavy_ili_models_bc.rds")
+saved_lambda_file <- file.path(model_dir, "final_lambda_value.rds")
+# 결과 테이블 저장 경로
+output_table_dir <- here("05_output", "tables")
+dir.create(output_table_dir, showWarnings = FALSE, recursive = TRUE) # 폴더 없으면 생성
+final_pred_csv_file <- file.path(output_table_dir, paste0("final_8week_forecast_", format(Sys.Date(), "%Y%m%d"), ".csv"))
+# 결과 플롯 저장 경로
+output_plot_dir <- here("05_output", "plots")
+dir.create(output_plot_dir, showWarnings = FALSE, recursive = TRUE) # 폴더 없으면 생성
+
+# 학습 및 예측 파라미터
+force_retrain_heavy_model <- FALSE
+light_roll_start_yw <- yearweek("2023 W52")
+heavy_fourier_k <- 15
+final_forecast_horizon <- 8
+min_obs_required <- 104
+```
+
+```{r}
+# --- 1. 데이터 로드 및 전처리 ---
+print("--- 1. 데이터 로드 및 전처리 ---")
+if (!file.exists(data_file_path)) stop("오류: 데이터 파일 없음: ", data_file_path)
+tryCatch({ ili_raw_data <- fread(data_file_path) }, error = function(e) stop("로드 오류: ", e$message))
+if (!target_col_name %in% colnames(ili_raw_data)) stop("오류: '", target_col_name, "' 컬럼 없음.")
+
+ili_ts_prepared <- ili_raw_data %>%
+  select(YEAR, WEEK, all_of(target_col_name)) %>%
+  rename(year=YEAR, week=WEEK, ilitotal=all_of(target_col_name)) %>%
+  mutate(
+    year = as.numeric(year), week = as.numeric(week),
+    yw_index = yearweek(paste(year, "W", sprintf("%02d", week))),
+    ilitotal = as.numeric(ilitotal), ilitotal = replace_na(ilitotal, 0),
+    ilitotal_positive = ifelse(ilitotal <= 0, 1, ilitotal) # Box-Cox용 양수 처리
+  ) %>%
+  select(yw_index, ilitotal, ilitotal_positive) %>% arrange(yw_index) %>% as_tsibble(index = yw_index)
+
+# Box-Cox Lambda 계산
+print("   > Box-Cox Lambda 계산 중...")
+lambda <- tryCatch({ guerrero(ili_ts_prepared$ilitotal_positive, .period = 52) },
+                   error = function(e) { print("! Lambda 계산 에러, 1 사용"); 1})
+print(paste("   계산된 Box-Cox Lambda:", round(lambda, 4)))
+
+# 변환된 컬럼 추가
+ili_ts <- ili_ts_prepared %>% mutate(ilitotal_bc = box_cox(ilitotal_positive, lambda))
+print(paste("   데이터 기간:", min(ili_ts$yw_index), "~", max(ili_ts$yw_index)))
+print("   데이터 전처리 및 Box-Cox 변환 완료.")
+```
+
+```{r}
+# --- 2. Lite Version 예측 수행 및 시각화 ---
+print("--- 2. Lite Version 예측 수행 시작 (Box-Cox 적용) ---")
+simulation_loop_end_yw <- max(ili_ts$yw_index) + 1
+rolling_forecast_horizon <- 1; roll_step_weeks <- 1
+
+light_forecasts_list <- list()
+current_train_end_yw <- light_roll_start_yw
+
+while (current_train_end_yw < simulation_loop_end_yw) {
+  current_train_data <- ili_ts %>% filter(yw_index <= current_train_end_yw)
+  if (nrow(current_train_data) < min_obs_required) { current_train_end_yw <- current_train_end_yw + roll_step_weeks; next }
+  target_forecast_yw = current_train_end_yw + rolling_forecast_horizon
+  print(paste("   > (Lite Version)", current_train_end_yw, "까지 데이터로", target_forecast_yw, "예측 중..."))
+
+  current_light_fit <- tryCatch({
+      current_train_data %>% model(
+          fitted_arima   = ARIMA(ilitotal_bc), fitted_ets = ETS(ilitotal_bc),
+          fitted_tslm    = TSLM(ilitotal_bc ~ trend() + season(period=52)),
+          fitted_prophet = prophet(ilitotal_bc)
+        )}, error = function(e) { print(paste(" ! Lite Model 학습 에러:", e$message)); NULL })
+  if (!is.null(current_light_fit)) {
+      current_light_forecast <- tryCatch({ forecast(current_light_fit, h = rolling_forecast_horizon)}, error=function(e){print(paste(" ! Lite Version 예측 생성 에러:", e$message)); NULL})
+      if (!is.null(current_light_forecast)) { light_forecasts_list[[as.character(current_train_end_yw)]] <- current_light_forecast }
+  }
+  current_train_end_yw <- current_train_end_yw + roll_step_weeks
+}
+
+# Lite Model 예측 결과 결합 및 역변환/시각화
+light_rolled_forecasts_orig <- NULL
+if (length(light_forecasts_list) > 0) {
+  light_rolled_forecasts_bc <- bind_rows(light_forecasts_list)
+  print("--- Lite Model 예측 실행 완료 (변환된 스케일) ---")
+  inv_box_cox <- function(x, lambda) { if (abs(lambda) < 1e-6) exp(x) else (lambda * x + 1)^(1 / lambda) }
+  light_rolled_forecasts_orig <- light_rolled_forecasts_bc %>% mutate(.mean = inv_box_cox(.mean, lambda))
+
+  print("   > Lite Model 예측 시각화 중 (원본 스케일)...")
+  p_light_rolling <- tryCatch({
+      ggplot() +
+        geom_line(data = ili_ts %>% filter(yw_index >= min(light_rolled_forecasts_orig$yw_index)),
+                  aes(x = yw_index, y = ilitotal, color = "Actual"), linewidth = 0.7) +
+        scale_colour_manual(name = "구분", values = c("Actual" = "black")) +
+        ggnewscale::new_scale_color() +
+        geom_line(data = light_rolled_forecasts_orig,
+                  aes(x = yw_index, y = .mean, color = .model), linewidth = 0.5, alpha = 0.9) +
+        scale_colour_brewer(name = "구분", palette = "Set2") +
+        labs(title = "ILINet 주간 Lite Model 예측 결과 vs 실제값 (수동 역변환)",
+             subtitle = paste("매주 재학습, h =", rolling_forecast_horizon),
+             y = "ILITOTAL (원본 스케일)", x = "시간") +
+        scale_y_continuous(labels = scales::label_number()) + theme_minimal()
+    }, error = function(e) { print(paste(" ! Lite Version 시각화 에러:", e$message)); NULL })
+  if(!is.null(p_light_rolling)){
+      print(p_light_rolling)
+      # 플롯 저장
+      ggsave(filename = file.path(output_plot_dir, "light_rolling_forecast_plot.png"), plot = p_light_rolling, width = 10, height = 6)
+  }
+} else { print("--- Lite Model 예측 결과가 없습니다. ---") }
+```
+
+```{r}
+# --- 3. Heavy Model 학습 및 저장 (Box-Cox 적용) ---
+print("--- 3. Heavy Model 학습 및 저장 (Box-Cox 적용) ---")
+if (!file.exists(saved_heavy_model_file) || !file.exists(saved_lambda_file) || force_retrain_heavy_model) {
+  print(paste("   > Heavy Model 학습 및 Lambda 저장 시작 (force_retrain=", force_retrain_heavy_model, ") ---"))
+  lambda_final <- lambda # 단계 1.5에서 계산된 lambda 사용
+  print(paste("   최종 Box-Cox Lambda:", round(lambda_final, 4)))
+  final_heavy_fit <- tryCatch({
+      ili_ts %>% model(
+          heavy_arima = ARIMA(ilitotal_bc, stepwise = FALSE, approximation = FALSE),
+          heavy_ets = ETS(ilitotal_bc),
+          heavy_tslm = TSLM(ilitotal_bc ~ trend() + fourier(period = 52, K = heavy_fourier_k)),
+          heavy_prophet = prophet(ilitotal_bc)
+        )}, error = function(e) { print(paste(" ! Heavy Model 학습 에러:", e$message)); NULL })
+  if (!is.null(final_heavy_fit)) {
+    tryCatch({ saveRDS(final_heavy_fit, file = saved_heavy_model_file); saveRDS(lambda_final, file = saved_lambda_file); print(paste("--- Heavy Model 및 Lambda 저장 완료 ---")) }, error = function(e) { print(paste(" ! 모델/Lambda 저장 에러:", e$message)) })
+    if(!is.null(final_heavy_fit$heavy_arima)) { print("   > 저장된 최종 ARIMA 모델 정보:"); report(final_heavy_fit %>% select(heavy_arima)) }
+  } else { print("--- Heavy Model 학습 실패 ---") }
+} else { print(paste("--- 3. 기존 저장된 Heavy Model 파일(", saved_heavy_model_file, ") 및 Lambda 파일(", saved_lambda_file, ") 사용 ---")) }
+```
+
+```{r}
+# --- 4. 저장된 Heavy Model 로드 및 최종 8주 예측 (수동 역변환 및 CSV 저장) ---
+print("--- 4. 저장된 Heavy Model 로드 및 최종 8주 예측 ---")
+if (!file.exists(saved_heavy_model_file) || !file.exists(saved_lambda_file)) stop("오류: 저장된 모델 또는 Lambda 파일 없음.")
+heavy_models_loaded <- tryCatch({ readRDS(saved_heavy_model_file) }, error = function(e) { print(paste(" ! 모델 로드 에러:", e$message)); NULL })
+lambda_loaded <- tryCatch({ readRDS(saved_lambda_file) }, error = function(e) { print(paste(" ! Lambda 로드 에러:", e$message)); NULL })
+if (is.null(heavy_models_loaded) || is.null(lambda_loaded)) stop("오류: 모델 또는 Lambda 파일 로드 실패.")
+print("   저장된 빡센 모델 및 Lambda 로드 완료.")
+print(paste("   로드된 Lambda:", round(lambda_loaded, 4)))
+
+print("   > 최종 8주 예측 생성(변환 스케일) 및 테이블 출력/저장(원본 스케일) 중...")
+final_8week_heavy_pred_table <- NULL
+final_8week_heavy_pred_bc <- tryCatch({ forecast(heavy_models_loaded, h = final_forecast_horizon)}, error=function(e){print(paste(" ! 최종 8주 예측 생성 에러:", e$message)); NULL})
+
+if(!is.null(final_8week_heavy_pred_bc)){
+    inv_box_cox <- function(x, lambda) { if (abs(lambda) < 1e-6) exp(x) else (lambda * x + 1)^(1 / lambda) }
+    final_8week_heavy_pred_orig <- final_8week_heavy_pred_bc %>% mutate(.mean = inv_box_cox(.mean, lambda_loaded))
+    final_8week_heavy_pred_table <- tryCatch({
+        final_8week_heavy_pred_orig %>% as_tibble() %>%
+          select(yw_index, .model, .mean) %>%
+          pivot_wider(names_from = .model, values_from = .mean)
+      }, error = function(e) { print(paste(" ! 최종 8주 예측 테이블 변환 에러:", e$message)); NULL })
+
+    if (!is.null(final_8week_heavy_pred_table)) {
+      print("   > 최종 8주 예측 결과 (Heavy Model 기반, 테이블 형태, 원본 스케일):")
+      print(final_8week_heavy_pred_table %>% mutate(across(where(is.numeric), ~ format(round(., 0), big.mark = ","))))
+
+      # 최종 예측 테이블 CSV 저장
+      tryCatch({ write_csv(final_8week_heavy_pred_table, final_pred_csv_file); print(paste("--- 최종 8주 예측 테이블이", final_pred_csv_file, "으로 저장되었습니다. ---")) }, error = function(e) { print(paste(" ! 최종 예측 테이블 CSV 저장 에러:", e$message)) })
+    }
+} else { print("--- 최종 8주 예측 결과 생성 실패 ---") }
+
+# --- 스크립트 종료 ---
+print("--- 모든 작업 완료 ---")
+```

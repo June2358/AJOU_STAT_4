@@ -1,0 +1,350 @@
+---
+title: "Central Limit Thorem "
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(here)
+source(here("source","get_lib.R"))
+```
+
+## Useful R Commands
+
+- R doesn't have a `bernoulli` function.
+- To simulate draws from a Bernoulli variable, you can either: 
+  - Use `sample` 
+  - Or, use `rbinom` (the Bernoulli distribution is a special case of a binomial distribution.  In this function, `size` refers to a distribution parameter, not the number of draws.)
+
+
+```{r ways to sample, results = 'hold'}
+p=0.2
+n=30
+sample(x=0:1, size=n, replace=TRUE, prob=c(1-p, p))
+rbinom(n=n, size=1, prob=p)
+```
+- To repeat an action, you can use `replicate`
+
+```{r replicate log}
+replicate(10, log(10))
+```
+\newpage 
+
+- To quickly visualize your results, try `hist`
+
+```{r quick histogram, fig.height=4}
+hist(x = rnorm(100), main = "Simulated Sample Means")
+```
+\newpage
+
+- Or, to work with `ggplot` store these results in a data.frame.  
+
+```{r ggplot histogram, message=FALSE, fig.height=4}
+d <- data.frame(x = rnorm(100))
+d %>% 
+  ggplot(aes(x=x)) + 
+  geom_histogram() 
+```
+
+\newpage
+
+## Exercises part 1
+
+Throughout this part, we will use fair coins (`p = 0.5`).  
+
+1. Fill in the function below so that it simulates taking n draws from a Bernoulli distribution with parameter p.  This is like tossing n coins at the same time. Use the `mean` function to compute the sample mean -- the average of the number of heads that are showing.  Make sure that when you run it, you return values in $\{0,1/3,2/3,1\}$.
+
+```{r define coin tossing function}
+# experiment 함수 정의
+# n: 베르누이 시행 횟수 (동전 던지는 횟수)
+# p: 성공(1, 앞면) 확률
+experiment = function(n, p){
+
+  # 방법 1: rbinom 사용
+  # n개의 베르누이 시행 결과를 시뮬레이션합니다.
+  # rbinom에서 size=1은 각 결과가 단일 시행(베르누이)임을 의미합니다.
+  # n은 생성할 난수의 개수 (시행 횟수) 입니다.
+  simulated_draws <- rbinom(n = n, size = 1, prob = p)
+
+  # 방법 2: sample 사용
+  # simulated_draws <- sample(x = 0:1, size = n, replace = TRUE, prob = c(1-p, p))
+
+  # 시뮬레이션 결과(0과 1의 벡터)의 평균을 계산합니다.
+  # 이는 n번의 시행 중 1(앞면)이 나온 비율, 즉 표본 평균입니다.
+  sample_mean <- mean(simulated_draws)
+
+  # 계산된 표본 평균을 반환합니다.
+  return(sample_mean)
+}
+
+# 함수 테스트
+test_result <- experiment(n = 20, p = 0.5)
+print(test_result)
+```
+
+2. The sample mean is a random variable. To understand it, use the visualization trick from a few weeks ago.  Use the `replicate` function to run the above experiment 1000 times, and plot a histogram of the results.
+
+```{r conduct the experiment 1000 times}
+# --- 파라미터 설정 ---
+num_replications <- 1000  # 반복할 실험 횟수 (replicate 예시 참고)
+n_coins <- 3             # 각 실험당 동전 던지는 횟수 (표본 크기 n)
+                         # (n=3 이어야 결과가 {0, 1/3, 2/3, 1} 중 하나가 됨)
+p_heads <- 0.5           # 앞면이 나올 확률 (공정한 동전)
+
+
+# --- 실험 반복 실행 (replicate 예시 참고) ---
+# replicate 함수를 사용하여 experiment 함수를 num_replications 만큼 반복 실행
+# experiment 함수는 n_coins개의 동전을 던져(p_heads 확률로 앞면) 앞면 비율(표본 평균)을 반환
+results_vector <- replicate(num_replications, experiment(n = n_coins, p = p_heads))
+
+# --- 결과 시각화 (hist 예시 참고) ---
+# hist 함수를 사용하여 결과 벡터(표본 평균들의 모음)의 히스토그램 생성
+hist(x = results_vector, # hist 함수의 첫번째 인자는 데이터 벡터 (예: rnorm(100) 대신 results_vector 사용)
+     main = paste("Histogram of", num_replications, "Sample Means"), # 그래프 제목 (예시 참고 및 수정)
+     xlab = paste("Sample Mean (n=", n_coins, ", p=", p_heads, ")", sep=""), # x축 레이블
+     ylab = "Frequency", # y축 레이블
+     col = "lightblue", # 막대 색상
+     border = "white",  # 막대 테두리
+     # breaks 인수는 막대 구간을 명시적으로 설정할 때 사용 (특히 이산적인 값에 유용)
+     # n=3일 때 가능한 값(0, 1/3, 2/3, 1) 주변에 구간을 만듭니다.
+     breaks = seq(from = -1/(2*n_coins), to = 1 + 1/(2*n_coins), by = 1/n_coins)
+     )
+
+# --- ggplot을 사용한 시각화 (ggplot 예시 참고) ---
+# ggplot을 사용하려면 먼저 결과를 데이터프레임으로 만듭니다.
+results_df <- data.frame(sample_means = results_vector)
+
+results_df %>%
+  ggplot(aes(x = sample_means)) +
+  geom_histogram(binwidth = 1/n_coins, # 막대 너비를 1/n 으로 설정
+                 color = "white", fill = "steelblue") +
+  labs(title = paste("Histogram of", num_replications, "Sample Means (ggplot)"),
+       x = paste("Sample Mean (n=", n_coins, ", p=", p_heads, ")", sep=""),
+       y = "Frequency") +
+  theme_minimal() # 테마 적용 (선택 사항)
+```
+
+3. If you replicate the experiment enough times, will the distribution ever look normal?  Why or why not?
+
+```{r}
+# 아니요
+# 단순히 실험을 많이 반복(replicate)한다고 해서 표본 평균의 분포가 반드시 정규분포처럼 보이는 것은 아닙니다.
+# 정규분포처럼 보이게 되는지 여부는 각 실험 내의 표본 크기 (n)에 달려 있습니다.
+```
+
+4. Try different values for the sample size `n`, and examine the shape of the sampling distribution of the mean.  At what point does it look normal to you? 
+
+```{r investigate sample size n, fig.height=4, fig.width=6, results='hold'}
+# 테스트할 다양한 표본 크기(n) 값들의 벡터를 정의합니다.
+n_values <- c(3, 5, 10, 30, 50, 100)
+
+# 시뮬레이션 파라미터 설정
+num_replications <- 1000  # 각 n 값에 대해 실험을 반복할 횟수
+p_heads <- 0.5           # 앞면이 나올 확률 (공정한 동전)
+
+# 정의된 각 n 값에 대해 루프를 실행합니다.
+for (current_n in n_values) {
+
+  # 현재 n 값을 사용하여 experiment 함수를 num_replications 만큼 반복 실행합니다.
+  # 각 실행 결과는 표본 평균 (앞면 비율)입니다.
+  results_vector <- replicate(num_replications, experiment(n = current_n, p = p_heads))
+
+  # 현재 n 값에 대한 표본 평균 분포의 히스토그램을 생성합니다.
+  hist(results_vector,
+       main = paste("Sampling Distribution of Mean (n = ", current_n, ")", sep=""), # 그래프 제목에 현재 n 값 표시
+       xlab = "Sample Mean (Proportion of Heads)",  # x축 레이블
+       ylab = "Frequency", # y축 레이블
+       col = "darkseagreen",   # 막대 색상 변경
+       border = "white", # 막대 테두리 색상
+       breaks = seq(from = -1/(2*current_n), to = 1 + 1/(2*current_n), by = 1/current_n),
+       xlim = c(0, 1)
+      )
+}
+```
+
+
+## Exercises Part 2
+
+For this part, we'll study a very unfair coin. `p = 0.01`.  
+
+This is an example of a highly skewed random variable.  That roughly means that one tail is a lot longer than the other.
+
+For this activity, you can simply use your eyes to gauge how skewed a distribution is.  If you prefer, you can also use the skewness command in the univar package to measure skewness.  You may hear a rule of thumb that a skewness above 1 or below -1 is a highly skewed distribution.
+
+6. Start with n=3 as before.  What do you notice about the shape of the sampling distribution?
+
+```{r skewed coin n=3}
+# 파트 2: 매우 불공정한 동전 (p=0.01)
+
+# 시뮬레이션 파라미터 설정
+n_coins_skew <- 3       # 표본 크기 (각 실험당 동전 던지는 횟수)
+p_heads_skew <- 0.01    # 앞면이 나올 확률 (매우 낮음)
+num_replications_skew <- 1000 # 실험 반복 횟수
+
+# 정의된 experiment 함수와 replicate 함수를 사용하여 시뮬레이션 실행
+# n=3, p=0.01 조건으로 1000번 반복하여 표본 평균들을 얻음
+results_skew_n3 <- replicate(num_replications_skew,
+                             experiment(n = n_coins_skew, p = p_heads_skew))
+
+# 결과(표본 평균들의 벡터)의 히스토그램 생성
+hist(results_skew_n3,
+     main = paste("Sampling Distribution (n=", n_coins_skew, ", p=", p_heads_skew, ")", sep=""), # 제목
+     xlab = "Sample Mean (Proportion of Heads)",  # x축 레이블
+     ylab = "Frequency", # y축 레이블
+     col = "coral",   # 막대 색상
+     border = "white", # 막대 테두리
+     # n=3 이므로 가능한 값(0, 1/3, 2/3, 1)을 중심으로 막대 구간 설정
+     breaks = seq(from = -1/(2*n_coins_skew), to = 1 + 1/(2*n_coins_skew), by = 1/n_coins_skew),
+     # x축 범위를 조정하여 0 근처를 더 잘 볼 수 있게 함 (선택 사항)
+     xlim = c(-0.1, 1.1)
+    )
+
+# (선택 사항) 실제 값들의 빈도수 확인
+# print(table(results_skew_n3))
+# print(prop.table(table(results_skew_n3))) # 비율 확인
+```
+
+7. Try different values for the sample size n, and examine the shape of the sampling distribution of the mean.  At what point does it look normal to you?
+
+```{r skewed coin varying n, fig.height=4, fig.width=6, results='hold'}
+# 파트 2: 매우 불공정한 동전 (p=0.01) - 다양한 n 값 테스트
+
+# 테스트할 다양한 표본 크기(n) 값들의 벡터를 정의
+n_values_skew <- c(10, 30, 100, 500, 1000, 2000)
+
+# 시뮬레이션 파라미터 설정
+num_replications_skew <- 1000  # 각 n 값에 대해 실험을 반복할 횟수
+p_heads_skew <- 0.01           # 앞면이 나올 확률 (매우 낮음)
+
+
+# 정의된 각 n 값에 대해 루프를 실행합니다.
+for (current_n in n_values_skew) {
+
+  # 현재 n 값을 사용하여 experiment 함수를 num_replications 만큼 반복 실행합니다.
+  results_vector_skew <- replicate(num_replications_skew,
+                                   experiment(n = current_n, p = p_heads_skew))
+
+  # 현재 n 값에 대한 표본 평균 분포의 히스토그램을 생성합니다.
+  hist(results_vector_skew,
+       main = paste("Sampling Distribution (n = ", current_n, ", p = ", p_heads_skew, ")", sep=""), # 제목
+       xlab = "Sample Mean (Proportion of Heads)",  # x축 레이블
+       ylab = "Frequency", # y축 레이블
+       col = "lightcoral",   # 막대 색상
+       border = "white", # 막대 테두리
+       breaks = 30,
+      )
+}
+```
+
+# More on useful R command
+
+## map()
+
+### Applying a Function to Each Element of a Vector
+
+```{r}
+# Define a vector
+numbers <- c(1, 2, 3, 4, 5)
+
+# Square each element using map()
+library(purrr)
+squared_numbers <- map(numbers, ~ .x^2)
+class(squared_numbers)
+
+# Print the result
+print(squared_numbers)
+print(squared_numbers[1])
+print(squared_numbers[[1]])
+print(unlist(squared_numbers))
+
+```
+
+### Working with Lists
+
+```{r}
+# Define a list
+names <- list("John", "Alice", "Bob")
+
+# Convert each name to uppercase using map()
+uppercase_names <- map(names, toupper)
+
+# Print the result
+print(uppercase_names)
+print(unlist(uppercase_names))
+
+```
+
+```{r}
+# Define a list of strings
+words <- list("apple", "banana", "orange")
+
+# Extract substrings using map()
+substring_list <- map(words, substr, start = 1, stop = 3)
+
+# Print the result
+print(unlist(substring_list))
+```
+
+### passing input parameters to a function 
+
+- The map() function iterates over each element of the input data structure (vector or list) and applies the specified function to each element. It then returns the results as a list.
+
+```{r}
+number_of_samples <- 1:3
+number_of_samples %>%  map(\(x) rnorm(x, 1)) 
+```
+
+## nest() and unnest()
+
+```{r}
+df <- tibble(
+  x = 1:3,
+  y = list(
+    NULL,
+    tibble(a = 1, b = 2),
+    tibble(a = 10:13, b = 30:33, c = 4)
+  )
+)
+
+df
+df[1]
+df[2]
+df[[2]][1]
+df[[2]][2]
+df[[2]][3]
+
+```
+
+```{r}
+# unnest() recycles input rows for each row of the list-column
+# and adds a column for each column
+df %>% unnest(y)
+```
+
+```{r}
+df %>% unnest(y, keep_empty = TRUE)
+```
+
+```{r}
+# You can unnest multiple columns simultaneously
+df <- tibble(
+  x = 1:2,
+  y = list(
+    tibble(a = 1, b = 2),
+    tibble(a = 3:4, b = 5:6)
+  ),
+  z = list(
+    tibble(c = 10, d = 20),
+    tibble(c = 33:34, d = 55:56)
+  )
+)
+
+df
+
+df %>% unnest(y)
+
+df %>% unnest(c(y, z))
+```
+
+
